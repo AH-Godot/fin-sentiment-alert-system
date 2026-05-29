@@ -24,7 +24,6 @@ import pandas as pd
 import yfinance as yf
 import matplotlib.pyplot as plt
 from datetime import datetime, timedelta
-import requests
 from gtts import gTTS
 from transformers import pipeline
 
@@ -32,7 +31,7 @@ from transformers import pipeline
 # 2. SETUP 
 # =========================
 st.set_page_config(page_title="AI Stock Dashboard", page_icon="📈", layout="wide")
-st.title("📈 AI Stock Sentiment & Audio Alert Dashboard")
+st.title("📈 AI Stock Sentiment & Audio Alert")
 
 ticker = st.text_input("Ticker Symbol (e.g., AAPL, TSLA)", "AAPL").upper()
 
@@ -48,15 +47,10 @@ def fetch_market_data(ticker_symbol):
     except Exception:
         news = []
     
-    # Fetch Price (Disguised as a real browser)
+    # 🔴 Fix: Use standard yf.download with 1d interval to avoid Yahoo hourly blocks
     try:
-        yf_session = requests.Session()
-        yf_session.headers.update({
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0 Safari/537.36"
-        })
-        stock = yf.Ticker(ticker_symbol, session=yf_session)
-        price = stock.history(period="7d", interval="1h")
-    except Exception:
+        price = yf.download(ticker_symbol, period="10d", interval="1d", threads=False)
+    except Exception as e:
         price = pd.DataFrame()
         
     return news, price
@@ -65,7 +59,7 @@ with st.spinner("Fetching market data..."):
     news, price = fetch_market_data(ticker)
     
 if not news or price.empty:
-    st.warning("Data unavailable for this ticker.")
+    st.warning(f"Data unavailable for {ticker}. Yahoo Finance may be temporarily blocking requests.")
     st.stop()
 
 # =========================
@@ -154,10 +148,11 @@ cols[2].metric("⚪ Neutral News", len(df[df['label'] == 'neutral']))
 
 st.markdown("### 📊 Price vs. Sentiment Trend")
 
+# Safely extract Close price based on yfinance version
 close_col = price["Close"]
 if isinstance(close_col, pd.DataFrame):
     close_col = close_col.iloc[:, 0]
-price_daily = close_col.groupby(price.index.date).mean()
+price_daily = close_col.groupby(close_col.index.date).mean()
 
 # Render Static Chart (Extremely low memory footprint)
 fig, ax1 = plt.subplots(figsize=(10, 4))
