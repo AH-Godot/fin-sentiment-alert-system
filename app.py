@@ -1,7 +1,6 @@
 import streamlit as st
 import feedparser
 import pandas as pd
-import matplotlib.subplots as plt # using pyplot safely
 import matplotlib.pyplot as plt
 from datetime import datetime, timedelta
 import requests
