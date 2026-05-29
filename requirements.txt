@@ -1,10 +1,8 @@
 streamlit
 feedparser
 pandas
-yfinance>=0.2.40
 matplotlib
 requests
 gTTS
-transformers
 torch
-torchvision
+transformers
