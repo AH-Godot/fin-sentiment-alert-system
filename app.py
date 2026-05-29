@@ -6,6 +6,7 @@ from datetime import datetime, timedelta
 import requests
 import io
 import time
+import base64
 from gtts import gTTS
 import torch
 from transformers import pipeline
@@ -13,25 +14,25 @@ from transformers import pipeline
 # =========================
 # 1. SETUP 
 # =========================
-st.set_page_config(page_title="AI Stock Dashboard (DistilBERT)", page_icon="⚡", layout="wide")
+st.set_page_config(page_title="AI Stock Dashboard", page_icon="⚡", layout="wide")
 st.title("⚡ Ultra-Fast Sentiment Dashboard")
-st.caption("Powered by distilbert-base-uncased-finetuned-sst-2-english (No yfinance required)")
+st.caption("Powered by distilbert-base-uncased-finetuned-sst-2-english")
 
 ticker = st.text_input("Ticker Symbol (e.g., AAPL, TSLA)", "AAPL").upper()
 
 # =========================
-# 2. RAW JSON DATA FETCHING (No yfinance)
+# 2. RAW JSON DATA FETCHING 
 # =========================
 @st.cache_data(ttl=300, show_spinner=False)
 def fetch_market_data(ticker_symbol):
-    # 1. Fetch News
+    # Fetch News
     url_news = f"https://news.google.com/rss/search?q={ticker_symbol}%20stock&hl=en-US&gl=US&ceid=US:en"
     try:
         news = feedparser.parse(url_news).entries[:30]
     except Exception:
         news = []
     
-    # 2. Fetch Raw Price Data via hidden Yahoo JSON endpoint
+    # Fetch Price (Asking for 10d to cover weekends, we will trim it later)
     price_series = pd.Series(dtype=float)
     try:
         url_price = f"https://query2.finance.yahoo.com/v8/finance/chart/{ticker_symbol}?range=10d&interval=1d"
@@ -43,7 +44,7 @@ def fetch_market_data(ticker_symbol):
             dates = [datetime.fromtimestamp(ts).date() for ts in data['timestamp']]
             closes = data['indicators']['quote'][0]['close']
             price_series = pd.Series(closes, index=dates).dropna()
-    except Exception as e:
+    except Exception:
         pass 
         
     return news, price_series
@@ -59,7 +60,7 @@ if price_daily.empty:
     st.warning("⚠️ Could not fetch price data. Displaying AI Sentiment without stock price overlay.")
 
 # =========================
-# 3. GLOBAL MODEL LOADING (CPU Warning Removed)
+# 3. GLOBAL MODEL LOADING
 # =========================
 @st.cache_resource(show_spinner=False)
 def load_model():
@@ -74,7 +75,6 @@ def load_model():
 
 sentiment_model, active_device = load_model()
 
-# Only show success message if a GPU is actually found, otherwise remain completely silent
 if active_device != -1:
     st.success("⚡ Model successfully loaded onto the GPU!")
 
@@ -82,7 +82,7 @@ if active_device != -1:
 # 4. SENTIMENT ANALYSIS
 # =========================
 data = []
-week_ago = datetime.now().date() - timedelta(days=7)
+week_ago = datetime.now().date() - timedelta(days=7) # Strict 7-day cutoff
 
 with st.spinner("Analyzing sentiments at lightning speed..."):
     for entry in news:
@@ -111,7 +111,7 @@ df_daily = df.groupby("date")["score"].mean()
 smoothed_daily = df_daily.rolling(2, min_periods=1).mean()
 
 # =========================
-# 5. TEXT-TO-SPEECH (TTS) ALERT w/ AUTOPLAY
+# 5. TEXT-TO-SPEECH (TTS) ALERT w/ AUTOPLAY REFRESH FIX
 # =========================
 st.markdown("### 🎙️ Audio Market Signal")
 
@@ -138,25 +138,52 @@ with st.spinner("Generating Audio Report..."):
         tts = gTTS(text=alert_text, lang='en', slow=False)
         audio_buffer = io.BytesIO()
         tts.write_to_fp(audio_buffer)
-        audio_buffer.seek(0)
         
-        # 🔴 FIX: Added autoplay=True so it reads the market signal out loud instantly
-        st.audio(audio_buffer, format='audio/mp3', autoplay=True)
+        # Display the visual player (so you can pause/mute it)
+        audio_buffer.seek(0)
+        st.audio(audio_buffer, format='audio/mp3')
+
+        # 🔴 FIX: Injecting a dynamic timestamp ID to force the browser to autoplay on every 5-min refresh
+        audio_buffer.seek(0)
+        audio_base64 = base64.b64encode(audio_buffer.read()).decode()
+        unique_id = str(time.time()).replace(".", "")
+        
+        audio_html = f"""
+            <audio id="audio_{unique_id}" autoplay="true">
+                <source src="data:audio/mp3;base64,{audio_base64}" type="audio/mp3">
+            </audio>
+        """
+        st.markdown(audio_html, unsafe_allow_html=True)
     except Exception:
         st.warning("Audio generation temporarily unavailable.")
 
 # =========================
-# 6. DYNAMIC VISUALIZATION & UI
+# 6. DYNAMIC VISUALIZATION & UI (REFINED)
 # =========================
-cols = st.columns(2) 
-cols[0].metric("🟢 Positive News", len(df[df['label'] == 'positive']))
-cols[1].metric("🔴 Negative News", len(df[df['label'] == 'negative']))
+st.markdown("### 📊 7-Day Sentiment Overview")
 
-st.markdown("### 📊 Price vs. Sentiment Trend")
+# Calculate today's specific score for the new metric card
+today_score_val = df_daily.iloc[-1] if not df_daily.empty else 0
+if today_score_val > 0:
+    trend_label = "Bullish"
+elif today_score_val < 0:
+    trend_label = "Bearish"
+else:
+    trend_label = "Neutral"
+
+cols = st.columns(3) 
+cols[0].metric("🟢 Total Positive (7d)", len(df[df['label'] == 'positive']))
+cols[1].metric("🔴 Total Negative (7d)", len(df[df['label'] == 'negative']))
+cols[2].metric("📈 Today's Avg Score", f"{today_score_val:.2f}", trend_label)
+
+st.markdown("### 📈 Price vs. Daily Average Sentiment")
 
 fig, ax1 = plt.subplots(figsize=(10, 4))
 
 if not price_daily.empty:
+    # 🔴 FIX: Strictly filter the stock prices to match the 7-day news cutoff
+    price_daily = price_daily[price_daily.index >= week_ago]
+    
     color1 = 'tab:blue'
     ax1.set_xlabel('Date')
     ax1.set_ylabel('Stock Price ($)', color=color1)
@@ -170,7 +197,7 @@ else:
     ax2 = ax1 
 
 color2 = 'tab:orange'
-ax2.set_ylabel('Sentiment Score (-1 to 1)', color=color2)  
+ax2.set_ylabel('Daily Avg Sentiment (-1 to 1)', color=color2)  
 ax2.plot(smoothed_daily.index, smoothed_daily.values, color=color2, marker='s', linestyle='dashed', linewidth=2)
 ax2.tick_params(axis='y', labelcolor=color2)
 ax2.set_ylim(-1.2, 1.2)
