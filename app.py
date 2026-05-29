@@ -1,56 +1,40 @@
-# =========================
-# 1. CRITICAL THREAD & RESOURCE LOCKS (Must be first)
-# =========================
-import warnings
-warnings.filterwarnings('ignore', category=FutureWarning)
-
-import os
-os.environ["TOKENIZERS_PARALLELISM"] = "false"
-os.environ["OMP_NUM_THREADS"] = "1"
-os.environ["MKL_NUM_THREADS"] = "1"
-os.environ["OPENBLAS_NUM_THREADS"] = "1"
-
-# Lock PyTorch memory before it can spawn background threads
-import torch
-torch.set_num_threads(1)
-torch.set_grad_enabled(False) # Prevents storing unnecessary training tensors
-
-import gc
-import time
-import io
 import streamlit as st
 import feedparser
 import pandas as pd
 import yfinance as yf
 import matplotlib.pyplot as plt
 from datetime import datetime, timedelta
+import requests
+import io
+import time
 from gtts import gTTS
+import torch
 from transformers import pipeline
 
 # =========================
-# 2. SETUP 
+# 1. SETUP 
 # =========================
-st.set_page_config(page_title="AI Stock Dashboard", page_icon="📈", layout="wide")
-st.title("📈 AI Stock Sentiment & Audio Alert")
+st.set_page_config(page_title="AI Stock Dashboard (DistilBERT)", page_icon="⚡", layout="wide")
+st.title("⚡ Ultra-Fast Sentiment Dashboard")
+st.caption("Powered by distilbert/distilbert-base-uncased-finetuned-sst-2-english")
 
 ticker = st.text_input("Ticker Symbol (e.g., AAPL, TSLA)", "AAPL").upper()
 
 # =========================
-# 3. LIGHTWEIGHT DATA FETCHING
+# 2. UNRESTRICTED DATA FETCHING
 # =========================
 @st.cache_data(ttl=300, show_spinner=False)
 def fetch_market_data(ticker_symbol):
-    # Fetch News (Limited to 10 to save RAM during local inference)
+    # Fetching up to 30 headlines 
     url = f"https://news.google.com/rss/search?q={ticker_symbol}%20stock&hl=en-US&gl=US&ceid=US:en"
     try:
-        news = feedparser.parse(url).entries[:10]
+        news = feedparser.parse(url).entries[:30]
     except Exception:
         news = []
     
-    # 🔴 Fix: Use standard yf.download with 1d interval to avoid Yahoo hourly blocks
     try:
         price = yf.download(ticker_symbol, period="10d", interval="1d", threads=False)
-    except Exception as e:
+    except Exception:
         price = pd.DataFrame()
         
     return news, price
@@ -59,31 +43,52 @@ with st.spinner("Fetching market data..."):
     news, price = fetch_market_data(ticker)
     
 if not news or price.empty:
-    st.warning(f"Data unavailable for {ticker}. Yahoo Finance may be temporarily blocking requests.")
+    st.warning(f"Data unavailable for {ticker}. Check ticker symbol or Yahoo Finance connection.")
     st.stop()
 
 # =========================
-# 4. LOCAL PIPELINE SENTIMENT ANALYSIS
+# 3. GLOBAL GPU MODEL LOADING
+# =========================
+@st.cache_resource(show_spinner=False)
+def load_gpu_model():
+    # Check for GPU availability
+    if torch.cuda.is_available():
+        device_id = 0
+        print("GPU Detected: Loading model to VRAM...")
+    elif torch.backends.mps.is_available():
+        # Support for Apple Silicon GPUs (M1/M2/M3 MacBooks)
+        device_id = "mps" 
+        print("Apple Metal GPU Detected...")
+    else:
+        device_id = -1
+        print("No GPU detected. Falling back to CPU...")
+
+    # Load your requested DistilBERT model
+    return pipeline("sentiment-analysis", model="distilbert/distilbert-base-uncased-finetuned-sst-2-english", device=device_id), device_id
+
+sentiment_model, active_device = load_gpu_model()
+
+if active_device == -1:
+    st.error("⚠️ GPU not detected by PyTorch. The model is running on the CPU.")
+else:
+    st.success("⚡ Model successfully loaded onto the GPU!")
+
+# =========================
+# 4. SENTIMENT ANALYSIS
 # =========================
 data = []
 week_ago = datetime.now().date() - timedelta(days=7)
 
-with st.spinner("Loading Local AI Model & Analyzing Sentiments (This takes a moment)..."):
-    # Load the smaller distilled model locally
-    sentiment_model = pipeline(
-        "sentiment-analysis", 
-        model="mrm8488/distilroberta-finetuned-financial-news-sentiment-analysis"
-    )
-    
+with st.spinner("Analyzing sentiments at lightning speed..."):
     for entry in news:
         if not hasattr(entry, "published_parsed"): continue
         dt = datetime(*entry.published_parsed[:6]).date()
         if dt < week_ago: continue
             
-        # Get real prediction
         result = sentiment_model(entry.title)[0]
+        # SST-2 outputs "POSITIVE" or "NEGATIVE"
         label = result['label'].lower()
-        score = 1 if label == "positive" else -1 if label == "negative" else 0
+        score = 1 if label == "positive" else -1
         
         data.append({
             "date": dt, 
@@ -92,10 +97,6 @@ with st.spinner("Loading Local AI Model & Analyzing Sentiments (This takes a mom
             "title": entry.title,
             "link": getattr(entry, 'link', '#') 
         })
-        
-    # 🔴 CRITICAL MEMORY SAVER: Delete model instantly to prevent server crash
-    del sentiment_model
-    gc.collect()
 
 df = pd.DataFrame(data)
 if df.empty:
@@ -106,7 +107,7 @@ df_daily = df.groupby("date")["score"].mean()
 smoothed_daily = df_daily.rolling(2, min_periods=1).mean()
 
 # =========================
-# 5. TEXT-TO-SPEECH (TTS) REVERSAL ALERT
+# 5. TEXT-TO-SPEECH (TTS) ALERT
 # =========================
 st.markdown("### 🎙️ Audio Market Signal")
 
@@ -122,7 +123,7 @@ with st.spinner("Generating Audio Report..."):
             alert_text = f"Warning! A bearish reversal has been detected for {ticker}. The sentiment has shifted from positive to negative."
             st.error("🔴 Bearish Reversal Detected")
         else:
-            trend = "positive" if today_score > 0 else "negative" if today_score < 0 else "neutral"
+            trend = "positive" if today_score > 0 else "negative" 
             alert_text = f"The current market sentiment for {ticker} continues to be {trend}. No major reversals detected today."
             st.info(f"⚪ Trend Continuation: {trend.title()}")
     else:
@@ -141,20 +142,19 @@ with st.spinner("Generating Audio Report..."):
 # =========================
 # 6. STATIC VISUALIZATION & UI
 # =========================
-cols = st.columns(3)
+cols = st.columns(2) # Only 2 columns since SST-2 doesn't output Neutral
 cols[0].metric("🟢 Positive News", len(df[df['label'] == 'positive']))
 cols[1].metric("🔴 Negative News", len(df[df['label'] == 'negative']))
-cols[2].metric("⚪ Neutral News", len(df[df['label'] == 'neutral']))
 
 st.markdown("### 📊 Price vs. Sentiment Trend")
 
-# Safely extract Close price based on yfinance version
+# Safely extract Close price
 close_col = price["Close"]
 if isinstance(close_col, pd.DataFrame):
     close_col = close_col.iloc[:, 0]
 price_daily = close_col.groupby(close_col.index.date).mean()
 
-# Render Static Chart (Extremely low memory footprint)
+# Render Static Chart 
 fig, ax1 = plt.subplots(figsize=(10, 4))
 
 color1 = 'tab:blue'
@@ -177,7 +177,7 @@ st.pyplot(fig)
 # News Feed
 st.markdown("### 📰 Recent Headlines")
 for _, row in df.head(10).iterrows():
-    emoji = "🟢" if row["label"] == "positive" else "🔴" if row["label"] == "negative" else "⚪"
+    emoji = "🟢" if row["label"] == "positive" else "🔴"
     st.markdown(f"{emoji} [{row['title']}]({row['link']})")
 
 # =========================
