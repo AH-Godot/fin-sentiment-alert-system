@@ -70,13 +70,13 @@ def load_models():
     else:
         device_id = -1
 
-    # Pipeline 1: Your Custom Fine-Tuned Sentiment Model
+    # Pipeline 1: Custom Fine-Tuned Sentiment Model
     sentiment_pipe = pipeline("text-classification", model="HANJINGYUE/FinSentiment-Alert-Dashboard", device=device_id)
 
     # Pipeline 2: Microsoft SpeechT5 TTS
     tts_pipe = pipeline("text-to-speech", model="microsoft/speecht5_tts", device=device_id)
     
-    # Load a specific speaker embedding voice profile (7306 is a clear female voice)
+    # 🔴 FIX: Using the secure, script-free parquet dataset to bypass Hugging Face security blocks
     embeddings_dataset = load_dataset("regisss/cmu-arctic-xvectors", split="validation")
     speaker_embedding = torch.tensor(embeddings_dataset[7306]["xvector"]).unsqueeze(0)
 
@@ -102,12 +102,20 @@ with st.spinner("Analyzing financial nuance..."):
         result = sentiment_model(entry.title)[0]
         label = result['label'].lower()
         
-        # Mapping for the phrasebank dataset labels
-        score = 1 if "positive" in label else -1 if "negative" in label else 0
+        # 🔴 FIX: Bulletproof label mapping (handles both "positive" and raw "label_2" outputs)
+        if "positive" in label or "label_2" in label:
+            score = 1
+            display_label = "positive"
+        elif "negative" in label or "label_0" in label:
+            score = -1
+            display_label = "negative"
+        else:
+            score = 0
+            display_label = "neutral"
         
         data.append({
             "date": dt, 
-            "label": label, 
+            "label": display_label, 
             "score": score, 
             "title": entry.title,
             "link": getattr(entry, 'link', '#') 
@@ -149,7 +157,6 @@ with st.spinner("Generating AI Voice Report..."):
         # Generate the audio using SpeechT5
         speech = tts_model(alert_text, forward_params={"speaker_embeddings": speaker_embed})
         
-        # Convert the generated NumPy array into a WAV file buffer
         audio_buffer = io.BytesIO()
         sf.write(audio_buffer, speech["audio"], speech["sampling_rate"], format="wav")
         audio_buffer.seek(0)
@@ -162,7 +169,6 @@ with st.spinner("Generating AI Voice Report..."):
         audio_base64 = base64.b64encode(audio_buffer.read()).decode()
         unique_id = str(time.time()).replace(".", "")
         
-        # Updated to audio/wav format for SpeechT5 compatibility
         audio_html = f"""
             <audio id="audio_{unique_id}" autoplay="true">
                 <source src="data:audio/wav;base64,{audio_base64}" type="audio/wav">
@@ -186,9 +192,9 @@ else:
     trend_label = "Neutral"
 
 cols = st.columns(4) 
-cols[0].metric("🟢 Pos (7d)", len(df[df['label'].str.contains('positive')]))
-cols[1].metric("⚪ Neu (7d)", len(df[df['label'].str.contains('neutral')]))
-cols[2].metric("🔴 Neg (7d)", len(df[df['label'].str.contains('negative')]))
+cols[0].metric("🟢 Pos (7d)", len(df[df['label'] == 'positive']))
+cols[1].metric("⚪ Neu (7d)", len(df[df['label'] == 'neutral']))
+cols[2].metric("🔴 Neg (7d)", len(df[df['label'] == 'negative']))
 cols[3].metric("📈 Today's Avg", f"{today_score_val:.2f}", trend_label)
 
 st.markdown("### 📈 Price vs. Daily Average Sentiment")
@@ -222,7 +228,7 @@ st.pyplot(fig)
 # News Feed
 st.markdown("### 📰 Recent Headlines")
 for _, row in df.head(10).iterrows():
-    emoji = "🟢" if "positive" in row["label"] else "🔴" if "negative" in row["label"] else "⚪"
+    emoji = "🟢" if row["label"] == "positive" else "🔴" if row["label"] == "negative" else "⚪"
     st.markdown(f"{emoji} [{row['title']}]({row['link']})")
 
 # =========================
