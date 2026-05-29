@@ -3,6 +3,8 @@ feedparser
 pandas
 matplotlib
 requests
-gTTS
 torch
 transformers
+soundfile
+datasets
+sentencepiece
