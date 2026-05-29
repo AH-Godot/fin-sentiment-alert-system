@@ -1,6 +1,7 @@
 import streamlit as st
 import feedparser
 import pandas as pd
+import matplotlib.subplots as plt # using pyplot safely
 import matplotlib.pyplot as plt
 from datetime import datetime, timedelta
 import requests
@@ -15,8 +16,8 @@ from transformers import pipeline
 # =========================
 # 1. SETUP 
 # =========================
-st.set_page_config(page_title="Citi Financial Sentiment Dashboard", page_icon="🚀", layout="wide")
-st.title("🚀 Citi Private Bank: Market Signal Dashboard")
+st.set_page_config(page_title="Pro Stock Dashboard", page_icon="🚀", layout="wide")
+st.title("🚀 Pro Financial Sentiment Dashboard")
 st.caption("Powered by HANJINGYUE/FinSentiment-Alert-Dashboard & Microsoft SpeechT5")
 
 ticker = st.text_input("Ticker Symbol (e.g., AAPL, TSLA)", "AAPL").upper()
@@ -26,12 +27,14 @@ ticker = st.text_input("Ticker Symbol (e.g., AAPL, TSLA)", "AAPL").upper()
 # =========================
 @st.cache_data(ttl=300, show_spinner=False)
 def fetch_market_data(ticker_symbol):
+    # Fetch News
     url_news = f"https://news.google.com/rss/search?q={ticker_symbol}%20stock&hl=en-US&gl=US&ceid=US:en"
     try:
         news = feedparser.parse(url_news).entries[:30]
     except Exception:
         news = []
     
+    # Fetch Price
     price_series = pd.Series(dtype=float)
     try:
         url_price = f"https://query2.finance.yahoo.com/v8/finance/chart/{ticker_symbol}?range=10d&interval=1d"
@@ -59,7 +62,7 @@ if price_daily.empty:
     st.warning("⚠️ Could not fetch price data. Displaying AI Sentiment without stock price overlay.")
 
 # =========================
-# 3. GLOBAL DUAL-PIPELINE LOADING
+# 3. GLOBAL DUAL-MODEL LOADING
 # =========================
 @st.cache_resource(show_spinner=False)
 def load_models():
@@ -70,13 +73,13 @@ def load_models():
     else:
         device_id = -1
 
-    # Pipeline 1: Custom Fine-Tuned Sentiment Model
+    # Pipeline 1: Custom Fine-Tuned Model
     sentiment_pipe = pipeline("text-classification", model="HANJINGYUE/FinSentiment-Alert-Dashboard", device=device_id)
-
-    # Pipeline 2: Microsoft SpeechT5 TTS
+    
+    # Pipeline 2: SpeechT5 
     tts_pipe = pipeline("text-to-speech", model="microsoft/speecht5_tts", device=device_id)
     
-    # 🔴 FIX: Using the secure, script-free parquet dataset to bypass Hugging Face security blocks
+    # Secure speaker embedding load
     embeddings_dataset = load_dataset("regisss/cmu-arctic-xvectors", split="validation")
     speaker_embedding = torch.tensor(embeddings_dataset[7306]["xvector"]).unsqueeze(0)
 
@@ -85,10 +88,10 @@ def load_models():
 sentiment_model, tts_model, speaker_embed, active_device = load_models()
 
 if active_device != -1:
-    st.success("⚡ Both Pipelines successfully loaded onto the GPU!")
+    st.success("⚡ Custom FinBERT & SpeechT5 successfully loaded onto the GPU!")
 
 # =========================
-# 4. SENTIMENT ANALYSIS (PIPELINE 1)
+# 4. SENTIMENT ANALYSIS
 # =========================
 data = []
 week_ago = datetime.now().date() - timedelta(days=7) 
@@ -102,7 +105,7 @@ with st.spinner("Analyzing financial nuance..."):
         result = sentiment_model(entry.title)[0]
         label = result['label'].lower()
         
-        # 🔴 FIX: Bulletproof label mapping (handles both "positive" and raw "label_2" outputs)
+        # Robust label mapping (handles both "positive" and "label_2" formats)
         if "positive" in label or "label_2" in label:
             score = 1
             display_label = "positive"
@@ -130,7 +133,7 @@ df_daily = df.groupby("date")["score"].mean()
 smoothed_daily = df_daily.rolling(2, min_periods=1).mean()
 
 # =========================
-# 5. TEXT-TO-SPEECH ALERT (PIPELINE 2)
+# 5. TEXT-TO-SPEECH (TTS) ALERT w/ AUTOPLAY
 # =========================
 st.markdown("### 🎙️ Audio Market Signal")
 
@@ -140,10 +143,10 @@ with st.spinner("Generating AI Voice Report..."):
         yest_score = df_daily.iloc[-2]
         
         if today_score > 0 and yest_score <= 0:
-            alert_text = f"Alert. A bullish reversal has been detected for {ticker}."
+            alert_text = f"Alert! A bullish reversal has been detected for {ticker}."
             st.success("🟢 Bullish Reversal Detected")
         elif today_score < 0 and yest_score >= 0:
-            alert_text = f"Warning. A bearish reversal has been detected for {ticker}."
+            alert_text = f"Warning! A bearish reversal has been detected for {ticker}."
             st.error("🔴 Bearish Reversal Detected")
         else:
             trend = "positive" if today_score > 0 else "negative" if today_score < 0 else "neutral"
@@ -176,7 +179,7 @@ with st.spinner("Generating AI Voice Report..."):
         """
         st.markdown(audio_html, unsafe_allow_html=True)
     except Exception as e:
-        st.warning(f"Audio generation temporarily unavailable. Model loading...")
+        st.warning(f"Audio generation temporarily unavailable: {e}")
 
 # =========================
 # 6. DYNAMIC VISUALIZATION & UI
