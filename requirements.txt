@@ -4,6 +4,7 @@ pandas
 matplotlib
 requests
 torch
+torchvision
 transformers
 soundfile
 datasets
