@@ -15,8 +15,8 @@ from transformers import pipeline
 # =========================
 # 1. SETUP 
 # =========================
-st.set_page_config(page_title="Pro Stock Dashboard", page_icon="🚀", layout="wide")
-st.title("🚀 Pro Financial Sentiment Dashboard")
+st.set_page_config(page_title="Citi Financial Sentiment Dashboard", page_icon="🚀", layout="wide")
+st.title("🚀 Citi Private Bank: Market Signal Dashboard")
 st.caption("Powered by HANJINGYUE/FinSentiment-Alert-Dashboard & Microsoft SpeechT5")
 
 ticker = st.text_input("Ticker Symbol (e.g., AAPL, TSLA)", "AAPL").upper()
@@ -78,7 +78,7 @@ def load_models():
     # Pipeline 2: SpeechT5 
     tts_pipe = pipeline("text-to-speech", model="microsoft/speecht5_tts", device=device_id)
     
-    # Secure speaker embedding load
+    # Secure speaker embedding load (Parquet format)
     embeddings_dataset = load_dataset("regisss/cmu-arctic-xvectors", split="validation")
     speaker_embedding = torch.tensor(embeddings_dataset[7306]["xvector"]).unsqueeze(0)
 
@@ -104,7 +104,7 @@ with st.spinner("Analyzing financial nuance..."):
         result = sentiment_model(entry.title)[0]
         label = result['label'].lower()
         
-        # Robust label mapping (handles both "positive" and "label_2" formats)
+        # Robust label mapping
         if "positive" in label or "label_2" in label:
             score = 1
             display_label = "positive"
