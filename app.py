@@ -7,16 +7,17 @@ import requests
 import io
 import time
 import base64
-from gtts import gTTS
 import torch
+import soundfile as sf
+from datasets import load_dataset
 from transformers import pipeline
 
 # =========================
 # 1. SETUP 
 # =========================
-st.set_page_config(page_title="Pro Stock Dashboard", page_icon="🚀", layout="wide")
-st.title("🚀 Pro Financial Sentiment Dashboard")
-st.caption("Powered by ProsusAI/finbert (GPU Accelerated)")
+st.set_page_config(page_title="Citi Financial Sentiment Dashboard", page_icon="🚀", layout="wide")
+st.title("🚀 Citi Private Bank: Market Signal Dashboard")
+st.caption("Powered by HANJINGYUE/FinSentiment-Alert-Dashboard & Microsoft SpeechT5")
 
 ticker = st.text_input("Ticker Symbol (e.g., AAPL, TSLA)", "AAPL").upper()
 
@@ -25,14 +26,12 @@ ticker = st.text_input("Ticker Symbol (e.g., AAPL, TSLA)", "AAPL").upper()
 # =========================
 @st.cache_data(ttl=300, show_spinner=False)
 def fetch_market_data(ticker_symbol):
-    # Fetch News
     url_news = f"https://news.google.com/rss/search?q={ticker_symbol}%20stock&hl=en-US&gl=US&ceid=US:en"
     try:
         news = feedparser.parse(url_news).entries[:30]
     except Exception:
         news = []
     
-    # Fetch Price
     price_series = pd.Series(dtype=float)
     try:
         url_price = f"https://query2.finance.yahoo.com/v8/finance/chart/{ticker_symbol}?range=10d&interval=1d"
@@ -60,10 +59,10 @@ if price_daily.empty:
     st.warning("⚠️ Could not fetch price data. Displaying AI Sentiment without stock price overlay.")
 
 # =========================
-# 3. GLOBAL MODEL LOADING
+# 3. GLOBAL DUAL-PIPELINE LOADING
 # =========================
 @st.cache_resource(show_spinner=False)
-def load_model():
+def load_models():
     if torch.cuda.is_available():
         device_id = 0
     elif torch.backends.mps.is_available():
@@ -71,16 +70,25 @@ def load_model():
     else:
         device_id = -1
 
-    # 🔴 FIX: Loaded the original FinBERT model
-    return pipeline("sentiment-analysis", model="ProsusAI/finbert", device=device_id), device_id
+    # Pipeline 1: Your Custom Fine-Tuned Sentiment Model
+    sentiment_pipe = pipeline("text-classification", model="HANJINGYUE/FinSentiment-Alert-Dashboard", device=device_id)
 
-sentiment_model, active_device = load_model()
+    # Pipeline 2: Microsoft SpeechT5 TTS
+    tts_pipe = pipeline("text-to-speech", model="microsoft/speecht5_tts", device=device_id)
+    
+    # Load a specific speaker embedding voice profile (7306 is a clear female voice)
+    embeddings_dataset = load_dataset("Matthijs/cmu-arctic-xvectors", split="validation")
+    speaker_embedding = torch.tensor(embeddings_dataset[7306]["xvector"]).unsqueeze(0)
+
+    return sentiment_pipe, tts_pipe, speaker_embedding, device_id
+
+sentiment_model, tts_model, speaker_embed, active_device = load_models()
 
 if active_device != -1:
-    st.success("⚡ FinBERT successfully loaded onto the GPU!")
+    st.success("⚡ Both Pipelines successfully loaded onto the GPU!")
 
 # =========================
-# 4. SENTIMENT ANALYSIS
+# 4. SENTIMENT ANALYSIS (PIPELINE 1)
 # =========================
 data = []
 week_ago = datetime.now().date() - timedelta(days=7) 
@@ -94,8 +102,8 @@ with st.spinner("Analyzing financial nuance..."):
         result = sentiment_model(entry.title)[0]
         label = result['label'].lower()
         
-        # 🔴 FIX: FinBERT outputs positive, negative, and neutral
-        score = 1 if label == "positive" else -1 if label == "negative" else 0
+        # Mapping for the phrasebank dataset labels
+        score = 1 if "positive" in label else -1 if "negative" in label else 0
         
         data.append({
             "date": dt, 
@@ -114,20 +122,20 @@ df_daily = df.groupby("date")["score"].mean()
 smoothed_daily = df_daily.rolling(2, min_periods=1).mean()
 
 # =========================
-# 5. TEXT-TO-SPEECH (TTS) ALERT w/ AUTOPLAY
+# 5. TEXT-TO-SPEECH ALERT (PIPELINE 2)
 # =========================
 st.markdown("### 🎙️ Audio Market Signal")
 
-with st.spinner("Generating Audio Report..."):
+with st.spinner("Generating AI Voice Report..."):
     if len(df_daily) >= 2:
         today_score = df_daily.iloc[-1]
         yest_score = df_daily.iloc[-2]
         
         if today_score > 0 and yest_score <= 0:
-            alert_text = f"Alert! A bullish reversal has been detected for {ticker}."
+            alert_text = f"Alert. A bullish reversal has been detected for {ticker}."
             st.success("🟢 Bullish Reversal Detected")
         elif today_score < 0 and yest_score >= 0:
-            alert_text = f"Warning! A bearish reversal has been detected for {ticker}."
+            alert_text = f"Warning. A bearish reversal has been detected for {ticker}."
             st.error("🔴 Bearish Reversal Detected")
         else:
             trend = "positive" if today_score > 0 else "negative" if today_score < 0 else "neutral"
@@ -138,25 +146,31 @@ with st.spinner("Generating Audio Report..."):
         st.info("⚪ Gathering history...")
 
     try:
-        tts = gTTS(text=alert_text, lang='en', slow=False)
-        audio_buffer = io.BytesIO()
-        tts.write_to_fp(audio_buffer)
+        # Generate the audio using SpeechT5
+        speech = tts_model(alert_text, forward_params={"speaker_embeddings": speaker_embed})
         
+        # Convert the generated NumPy array into a WAV file buffer
+        audio_buffer = io.BytesIO()
+        sf.write(audio_buffer, speech["audio"], speech["sampling_rate"], format="wav")
         audio_buffer.seek(0)
-        st.audio(audio_buffer, format='audio/mp3')
+        
+        # Display the visual player
+        st.audio(audio_buffer, format='audio/wav')
 
+        # Hidden HTML injection for Autoplay Bypass
         audio_buffer.seek(0)
         audio_base64 = base64.b64encode(audio_buffer.read()).decode()
         unique_id = str(time.time()).replace(".", "")
         
+        # Updated to audio/wav format for SpeechT5 compatibility
         audio_html = f"""
             <audio id="audio_{unique_id}" autoplay="true">
-                <source src="data:audio/mp3;base64,{audio_base64}" type="audio/mp3">
+                <source src="data:audio/wav;base64,{audio_base64}" type="audio/wav">
             </audio>
         """
         st.markdown(audio_html, unsafe_allow_html=True)
-    except Exception:
-        st.warning("Audio generation temporarily unavailable.")
+    except Exception as e:
+        st.warning(f"Audio generation temporarily unavailable. Model loading...")
 
 # =========================
 # 6. DYNAMIC VISUALIZATION & UI
@@ -171,11 +185,10 @@ elif today_score_val < -0.05:
 else:
     trend_label = "Neutral"
 
-# 🔴 FIX: 4-Column layout to account for Neutral headlines from FinBERT
 cols = st.columns(4) 
-cols[0].metric("🟢 Pos (7d)", len(df[df['label'] == 'positive']))
-cols[1].metric("⚪ Neu (7d)", len(df[df['label'] == 'neutral']))
-cols[2].metric("🔴 Neg (7d)", len(df[df['label'] == 'negative']))
+cols[0].metric("🟢 Pos (7d)", len(df[df['label'].str.contains('positive')]))
+cols[1].metric("⚪ Neu (7d)", len(df[df['label'].str.contains('neutral')]))
+cols[2].metric("🔴 Neg (7d)", len(df[df['label'].str.contains('negative')]))
 cols[3].metric("📈 Today's Avg", f"{today_score_val:.2f}", trend_label)
 
 st.markdown("### 📈 Price vs. Daily Average Sentiment")
@@ -209,7 +222,7 @@ st.pyplot(fig)
 # News Feed
 st.markdown("### 📰 Recent Headlines")
 for _, row in df.head(10).iterrows():
-    emoji = "🟢" if row["label"] == "positive" else "🔴" if row["label"] == "negative" else "⚪"
+    emoji = "🟢" if "positive" in row["label"] else "🔴" if "negative" in row["label"] else "⚪"
     st.markdown(f"{emoji} [{row['title']}]({row['link']})")
 
 # =========================
