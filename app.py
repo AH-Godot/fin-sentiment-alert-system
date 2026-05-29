@@ -77,7 +77,7 @@ def load_models():
     tts_pipe = pipeline("text-to-speech", model="microsoft/speecht5_tts", device=device_id)
     
     # Load a specific speaker embedding voice profile (7306 is a clear female voice)
-    embeddings_dataset = load_dataset("Matthijs/cmu-arctic-xvectors", split="validation")
+    embeddings_dataset = load_dataset("Matthijs/cmu-arctic-xvectors", split="validation", trust_remote_code=True)
     speaker_embedding = torch.tensor(embeddings_dataset[7306]["xvector"]).unsqueeze(0)
 
     return sentiment_pipe, tts_pipe, speaker_embedding, device_id
