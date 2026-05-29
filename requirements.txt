@@ -3,7 +3,7 @@
 streamlit
 feedparser
 pandas
-yfinance
+yfinance>=0.2.40
 matplotlib
 requests
 gTTS
